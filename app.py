@@ -33,13 +33,13 @@ def calculate_ss(id_vals, vg_vals):
 def make_card(title, value, color):
     return f"""
     <div style='text-align: left; padding: 5px 0;'>
-        <p style='font-size: 18px; margin-bottom: 5px; color: #555;'>{title}</p>
-        <p style='font-size: 32px; font-weight: bold; color: {color}; margin: 0; line-height: 1.2;'>{value}</p>
+        <p style='font-size: 20px; margin-bottom: 5px; color: #555;'>{title}</p>
+        <p style='font-size: 24px; font-weight: bold; color: {color}; margin: 0; line-height: 1.2;'>{value}</p>
     </div>
     """
 
-# ✅ 파라미터 계산을 묶어둔 헬퍼 함수 (Average 계산용)
-def extract_parameters_from_sheet(df, w, l, cox):
+# 파라미터 계산을 묶어둔 헬퍼 함수 (Average 계산 및 실시간 반영용)
+def extract_parameters_from_sheet(df, sheet_name, w, l, cox):
     vg = df['GateV']
     id_raw = df['DrainI']
     vd = df['DrainV'].iloc[0]
@@ -69,20 +69,33 @@ def extract_parameters_from_sheet(df, w, l, cox):
     gm_bwd_raw = fix_inf(np.gradient(id_bwd.values, vg_bwd.values))
     mobility_bwd_raw = (abs(gm_bwd_raw) * l) / (w * cox * abs(vd))
 
-    gm_fwd_smooth = fix_inf(np.gradient(id_fwd_smooth, vg_fwd.values))
-    gm_bwd_smooth = fix_inf(np.gradient(id_bwd_smooth, vg_bwd.values))
-
-    idx_max_gm_fwd = np.argmax(np.abs(gm_fwd_smooth))
-    idx_max_gm_bwd = np.argmax(np.abs(gm_bwd_smooth))
+    # ✅ 핵심: 세션에 저장된 수정값이 있으면 그 값을 사용
+    key_fwd = f"val_fwd_{sheet_name}"
+    key_bwd = f"val_bwd_{sheet_name}"
     
-    vg_max_gm_fwd = float(vg_fwd.iloc[idx_max_gm_fwd])
-    vg_max_gm_bwd = float(vg_bwd.iloc[idx_max_gm_bwd])
+    if key_fwd in st.session_state:
+        target_vg_fwd = st.session_state[key_fwd]
+    else:
+        gm_fwd_smooth = fix_inf(np.gradient(id_fwd_smooth, vg_fwd.values))
+        target_vg_fwd = float(vg_fwd.iloc[np.argmax(np.abs(gm_fwd_smooth))])
 
-    vth_fwd = -id_fwd.iloc[idx_max_gm_fwd] / gm_fwd_raw[idx_max_gm_fwd] + vg_max_gm_fwd
-    peak_mu_fwd = mobility_fwd_raw[idx_max_gm_fwd]
+    if key_bwd in st.session_state:
+        target_vg_bwd = st.session_state[key_bwd]
+    else:
+        gm_bwd_smooth = fix_inf(np.gradient(id_bwd_smooth, vg_bwd.values))
+        target_vg_bwd = float(vg_bwd.iloc[np.argmax(np.abs(gm_bwd_smooth))])
+
+    idx_f = (vg_fwd - target_vg_fwd).abs().argmin()
+    idx_b = (vg_bwd - target_vg_bwd).abs().argmin()
+
+    vg_max_gm_fwd = float(vg_fwd.iloc[idx_f])
+    vg_max_gm_bwd = float(vg_bwd.iloc[idx_b])
+
+    vth_fwd = -id_fwd.iloc[idx_f] / gm_fwd_raw[idx_f] + vg_max_gm_fwd
+    peak_mu_fwd = mobility_fwd_raw[idx_f]
     
-    vth_bwd = -id_bwd.iloc[idx_max_gm_bwd] / gm_bwd_raw[idx_max_gm_bwd] + vg_max_gm_bwd
-    peak_mu_bwd = mobility_bwd_raw[idx_max_gm_bwd]
+    vth_bwd = -id_bwd.iloc[idx_b] / gm_bwd_raw[idx_b] + vg_max_gm_bwd
+    peak_mu_bwd = mobility_bwd_raw[idx_b]
     
     hysteresis = abs(vth_fwd - vth_bwd)
     
@@ -107,9 +120,30 @@ if uploaded_file:
     if not target_sheets:
         st.error("분석할 수 있는 시트('Data' 또는 'Append...')가 없습니다.")
     else:
+        # ✅ [공통] 모든 시트의 기본 Gm Max Point 자동 계산 및 세션 초기화 (최초 1회만)
+        for s_name in target_sheets:
+            if f"val_fwd_{s_name}" not in st.session_state:
+                temp_df = pd.read_excel(uploaded_file, sheet_name=s_name)
+                temp_vg = temp_df['GateV']
+                temp_id = temp_df['DrainI']
+                if abs(temp_vg.max() - temp_vg.iloc[0]) > abs(temp_vg.min() - temp_vg.iloc[0]):
+                    p_idx = temp_vg.idxmax()
+                else: p_idx = temp_vg.idxmin()
+                temp_fwd_vg, temp_fwd_id = temp_vg[:p_idx+1], temp_id[:p_idx+1]
+                temp_bwd_vg, temp_bwd_id = temp_vg[p_idx:], temp_id[p_idx:]
+                
+                win = min(len(temp_fwd_vg), 15)
+                if win % 2 == 0: win -= 1
+                f_sm = savgol_filter(medfilt(temp_fwd_id, 3), win, 2) if win >= 3 else temp_fwd_id
+                b_sm = savgol_filter(medfilt(temp_bwd_id, 3), win, 2) if win >= 3 else temp_bwd_id
+                
+                st.session_state[f"val_fwd_{s_name}"] = float(temp_fwd_vg.iloc[np.argmax(np.abs(np.gradient(f_sm, temp_fwd_vg)))])
+                st.session_state[f"val_bwd_{s_name}"] = float(temp_bwd_vg.iloc[np.argmax(np.abs(np.gradient(b_sm, temp_bwd_vg)))])
+
+
         st.sidebar.markdown("---")
-        # ✅ Average (All Sheets) 옵션 추가
-        options = ["Average (All Sheets)"] + target_sheets
+        # ✅ Average 옵션을 가장 마지막으로 배치
+        options = target_sheets + ["Average (All Sheets)"]
         selected_sheet = st.sidebar.selectbox("📂 Select Data Sheet", options)
         
         # =====================================================================
@@ -117,13 +151,13 @@ if uploaded_file:
         # =====================================================================
         if selected_sheet == "Average (All Sheets)":
             st.markdown(f"<h3 style='color: #333;'>📊 Statistics (Average of {len(target_sheets)} sheets)</h3>", unsafe_allow_html=True)
-            st.info("해당 값은 각 시트에서 추출된 파라미터의 평균(± 표준편차)입니다. (그래프는 표시되지 않습니다.)")
+            st.info("해당 값은 각 시트에서 추출된(수정된 Vg 포인트가 반영된) 파라미터의 평균(± 표준편차)입니다.")
             
             results = []
             for sheet in target_sheets:
                 df = pd.read_excel(uploaded_file, sheet_name=sheet)
                 if 'GateV' in df.columns and 'DrainI' in df.columns:
-                    res = extract_parameters_from_sheet(df, W, L, Cox)
+                    res = extract_parameters_from_sheet(df, sheet, W, L, Cox)
                     results.append(res)
                     
             if not results:
@@ -131,14 +165,13 @@ if uploaded_file:
             else:
                 df_res = pd.DataFrame(results)
                 
-                # 통계량 포맷팅 도우미
                 def format_stat(col, unit, is_log=False):
                     mean_val = df_res[col].mean()
                     std_val = df_res[col].std()
                     if is_log:
                         exp = int(np.floor(np.log10(mean_val)))
                         coef = mean_val / (10 ** exp)
-                        return f"{coef:.2f}E{exp}" # On/Off는 평균만 E표기법으로
+                        return f"{coef:.2f}E{exp}" 
                     
                     if not np.isfinite(mean_val): return "N/A"
                     return f"{mean_val:.2f} ± {std_val:.2f} {unit}"
@@ -214,26 +247,23 @@ if uploaded_file:
                 gm_bwd_smooth = fix_inf(np.gradient(id_bwd_smooth, vg_bwd.values))
                 mobility_bwd_smooth = (abs(gm_bwd_smooth) * L) / (W * Cox * abs(vd))
 
-                idx_max_gm_fwd_auto = np.argmax(np.abs(gm_fwd_smooth))
-                vg_max_gm_fwd_auto = float(vg_fwd.iloc[idx_max_gm_fwd_auto])
-                
-                idx_max_gm_bwd_auto = np.argmax(np.abs(gm_bwd_smooth))
-                vg_max_gm_bwd_auto = float(vg_bwd.iloc[idx_max_gm_bwd_auto])
-
                 st.sidebar.markdown("---")
                 st.sidebar.markdown(f"**Gₘ Max Point Adjustment ({selected_sheet})**")
                 vg_step = float(abs(vg_fwd.iloc[1] - vg_fwd.iloc[0])) if len(vg_fwd) > 1 else 0.5
                 
+                # ✅ 수정: on_change 콜백 패턴 대신 st.session_state에 확실히 업데이트 되도록 처리
                 st.sidebar.markdown("Adjust <span style='color: #6FADCF; font-weight: bold;'>Forward</span> $V_g$ Point", unsafe_allow_html=True)
-                target_vg_fwd = st.sidebar.number_input("Adjust Fwd Vg", value=vg_max_gm_fwd_auto, step=vg_step, format="%.2f", label_visibility="collapsed")
+                new_fwd = st.sidebar.number_input("Adjust Fwd Vg", value=st.session_state[f"val_fwd_{selected_sheet}"], step=vg_step, format="%.2f", label_visibility="collapsed", key=f"fwd_ui_{selected_sheet}")
+                st.session_state[f"val_fwd_{selected_sheet}"] = new_fwd
                 
                 st.sidebar.markdown("Adjust <span style='color: #F05650; font-weight: bold;'>Backward</span> $V_g$ Point", unsafe_allow_html=True)
-                target_vg_bwd = st.sidebar.number_input("Adjust Bwd Vg", value=vg_max_gm_bwd_auto, step=vg_step, format="%.2f", label_visibility="collapsed")
+                new_bwd = st.sidebar.number_input("Adjust Bwd Vg", value=st.session_state[f"val_bwd_{selected_sheet}"], step=vg_step, format="%.2f", label_visibility="collapsed", key=f"bwd_ui_{selected_sheet}")
+                st.session_state[f"val_bwd_{selected_sheet}"] = new_bwd
 
-                selected_idx_fwd = (vg_fwd - target_vg_fwd).abs().argmin()
+                selected_idx_fwd = (vg_fwd - new_fwd).abs().argmin()
                 vg_max_gm_fwd = vg_fwd.iloc[selected_idx_fwd]
                 
-                selected_idx_bwd = (vg_bwd - target_vg_bwd).abs().argmin()
+                selected_idx_bwd = (vg_bwd - new_bwd).abs().argmin()
                 vg_max_gm_bwd = vg_bwd.iloc[selected_idx_bwd]
 
                 vth_fwd = -id_fwd.iloc[selected_idx_fwd] / gm_fwd_raw[selected_idx_fwd] + vg_max_gm_fwd
@@ -261,14 +291,14 @@ if uploaded_file:
                 f1, f2, f3, f4 = st.columns(4)
                 f1.markdown(make_card("Peak Mobility", f"{peak_mu_fwd:.2f} cm²/V·s", "#2E60AB"), unsafe_allow_html=True)
                 f2.markdown(make_card("Threshold Voltage (Vₜₕ)", f"{vth_fwd:.2f} V", "#A23B72"), unsafe_allow_html=True)
-                f3.markdown(make_card("Gₘ Max Point", f"{vg_fwd.iloc[selected_idx_fwd]:.1f} V", "#F18F01"), unsafe_allow_html=True)
+                f3.markdown(make_card("Gₘ Max Point", f"{vg_max_gm_fwd:.1f} V", "#F18F01"), unsafe_allow_html=True)
                 f4.markdown(make_card("SS (Subthreshold Swing)", ss_fwd_display, "#18A558"), unsafe_allow_html=True)
 
                 st.markdown("<h4 style='color: #F05650; margin-top: 20px;'>Backward Sweep Parameters</h4>", unsafe_allow_html=True)
                 b1, b2, b3, b4 = st.columns(4)
                 b1.markdown(make_card("Peak Mobility", f"{peak_mu_bwd:.2f} cm²/V·s", "#2E60AB"), unsafe_allow_html=True)
                 b2.markdown(make_card("Threshold Voltage (Vₜₕ)", f"{vth_bwd:.2f} V", "#A23B72"), unsafe_allow_html=True)
-                b3.markdown(make_card("Gₘ Max Point", f"{vg_bwd.iloc[selected_idx_bwd]:.1f} V", "#F18F01"), unsafe_allow_html=True)
+                b3.markdown(make_card("Gₘ Max Point", f"{vg_max_gm_bwd:.1f} V", "#F18F01"), unsafe_allow_html=True)
                 b4.markdown(make_card("SS (Subthreshold Swing)", ss_bwd_display, "#18A558"), unsafe_allow_html=True)
                 
                 st.markdown("<h4 style='margin-top: 20px;'>Overall Device Parameters</h4>", unsafe_allow_html=True)
