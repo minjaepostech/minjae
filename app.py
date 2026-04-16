@@ -3,11 +3,35 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
-from scipy.signal import savgol_filter, medfilt  
 
 # 1. 페이지 설정
 st.set_page_config(page_title="FET-Analysis_Minjae", layout="wide")
 st.title("FET-Analysis_Minjae")
+
+# ✅ 드래그바(슬라이더)의 선, 원, 위에 뜨는 숫자까지 모두 검은색/기본색으로 완벽 통일하는 CSS
+st.markdown("""
+<style>
+/* 1. 슬라이더 손잡이(원) 검은색 */
+div[data-testid="stSlider"] div[role="slider"] {
+    background-color: black !important;
+    border-color: black !important;
+}
+/* 2. 슬라이더 채워진 선(트랙) 검은색으로 강제 덮어쓰기 */
+div[data-testid="stSlider"] div[data-testid="stSliderTrack"] > div:nth-child(1) {
+    background-color: black !important;
+}
+/* 3. 슬라이더 위에 뜨는 작은 숫자 말풍선 배경 투명하게, 글씨는 기본색(테마색)으로 */
+div[data-testid="stSlider"] div[role="slider"] > div {
+    color: var(--text-color) !important;
+    background-color: transparent !important;
+}
+/* 만약 인라인 스타일로 칠해지는 기본 빨간색이 있다면 모두 검은색으로 차단 */
+div[data-testid="stSlider"] div[style*="rgb(255, 75, 75)"],
+div[data-testid="stSlider"] div[style*="#ff4b4b"] {
+    background-color: black !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # 2. 소자 파라미터 
 st.sidebar.header("Device Information")
@@ -34,12 +58,12 @@ def make_card(title, value, color):
     return f"""
     <div style='text-align: left; padding: 5px 0;'>
         <p style='font-size: 20px; margin-bottom: 5px; color: #555;'>{title}</p>
-        <p style='font-size: 24px; font-weight: bold; color: {color}; margin: 0; line-height: 1.2;'>{value}</p>
+        <p style='font-size: 26px; font-weight: bold; color: {color}; margin: 0; line-height: 1.2;'>{value}</p>
     </div>
     """
 
-# 파라미터 계산을 묶어둔 헬퍼 함수 (Average 계산 및 실시간 반영용)
-def extract_parameters_from_sheet(df, sheet_name, w, l, cox):
+# 파라미터 추출 헬퍼 함수
+def extract_parameters_from_sheet(df, file_id, sheet_name, w, l, cox):
     vg = df['GateV']
     id_raw = df['DrainI']
     vd = df['DrainV'].iloc[0]
@@ -52,44 +76,36 @@ def extract_parameters_from_sheet(df, sheet_name, w, l, cox):
     vg_fwd, id_fwd = vg[:peak_idx+1].reset_index(drop=True), id_raw[:peak_idx+1].reset_index(drop=True)
     vg_bwd, id_bwd = vg[peak_idx:].reset_index(drop=True), id_raw[peak_idx:].reset_index(drop=True)
     
-    id_fwd_med = medfilt(id_fwd, kernel_size=3) 
-    id_bwd_med = medfilt(id_bwd, kernel_size=3)
-
-    win_len = min(len(id_fwd), 15)
-    if win_len % 2 == 0: win_len -= 1
-    if win_len >= 3:
-        id_fwd_smooth = savgol_filter(id_fwd_med, win_len, 2)
-        id_bwd_smooth = savgol_filter(id_bwd_med, win_len, 2)
-    else:
-        id_fwd_smooth, id_bwd_smooth = id_fwd_med, id_bwd_med
-
+    # Smoothing 완전 제거. 오직 Raw Data로만 계산
     gm_fwd_raw = fix_inf(np.gradient(id_fwd.values, vg_fwd.values))
     mobility_fwd_raw = (abs(gm_fwd_raw) * l) / (w * cox * abs(vd))
     
     gm_bwd_raw = fix_inf(np.gradient(id_bwd.values, vg_bwd.values))
     mobility_bwd_raw = (abs(gm_bwd_raw) * l) / (w * cox * abs(vd))
 
-    # ✅ 핵심: 세션에 저장된 수정값이 있으면 그 값을 사용
-    key_fwd = f"val_fwd_{sheet_name}"
-    key_bwd = f"val_bwd_{sheet_name}"
+    key_fwd = f"val_fwd_{file_id}_{sheet_name}"
+    key_bwd = f"val_bwd_{file_id}_{sheet_name}"
     
     if key_fwd in st.session_state:
         target_vg_fwd = st.session_state[key_fwd]
     else:
-        gm_fwd_smooth = fix_inf(np.gradient(id_fwd_smooth, vg_fwd.values))
-        target_vg_fwd = float(vg_fwd.iloc[np.argmax(np.abs(gm_fwd_smooth))])
+        abs_gm_f = np.abs(gm_fwd_raw)
+        idx_f_auto = np.argmax(abs_gm_f[2:-2]) + 2 if len(abs_gm_f) > 5 else np.argmax(abs_gm_f)
+        target_vg_fwd = float(vg_fwd.iloc[idx_f_auto])
 
     if key_bwd in st.session_state:
         target_vg_bwd = st.session_state[key_bwd]
     else:
-        gm_bwd_smooth = fix_inf(np.gradient(id_bwd_smooth, vg_bwd.values))
-        target_vg_bwd = float(vg_bwd.iloc[np.argmax(np.abs(gm_bwd_smooth))])
+        abs_gm_b = np.abs(gm_bwd_raw)
+        idx_b_auto = np.argmax(abs_gm_b[2:-2]) + 2 if len(abs_gm_b) > 5 else np.argmax(abs_gm_b)
+        target_vg_bwd = float(vg_bwd.iloc[idx_b_auto])
 
-    idx_f = (vg_fwd - target_vg_fwd).abs().argmin()
-    idx_b = (vg_bwd - target_vg_bwd).abs().argmin()
-
-    vg_max_gm_fwd = float(vg_fwd.iloc[idx_f])
-    vg_max_gm_bwd = float(vg_bwd.iloc[idx_b])
+    # 가장 가까운 전압 값 매칭
+    vg_max_gm_fwd = float(vg_fwd.loc[(vg_fwd - target_vg_fwd).abs().idxmin()])
+    vg_max_gm_bwd = float(vg_bwd.loc[(vg_bwd - target_vg_bwd).abs().idxmin()])
+    
+    idx_f = vg_fwd[vg_fwd == vg_max_gm_fwd].index[0]
+    idx_b = vg_bwd[vg_bwd == vg_max_gm_bwd].index[0]
 
     vth_fwd = -id_fwd.iloc[idx_f] / gm_fwd_raw[idx_f] + vg_max_gm_fwd
     peak_mu_fwd = mobility_fwd_raw[idx_f]
@@ -113,6 +129,8 @@ def extract_parameters_from_sheet(df, sheet_name, w, l, cox):
 uploaded_file = st.file_uploader("측정된 엑셀 파일을 업로드하세요", type=["xlsx", "xls"])
 
 if uploaded_file:
+    file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+    
     xls = pd.ExcelFile(uploaded_file)
     sheet_names = xls.sheet_names
     target_sheets = [s for s in sheet_names if s == 'Data' or s.lower().startswith('append')]
@@ -120,35 +138,34 @@ if uploaded_file:
     if not target_sheets:
         st.error("분석할 수 있는 시트('Data' 또는 'Append...')가 없습니다.")
     else:
-        # ✅ [공통] 모든 시트의 기본 Gm Max Point 자동 계산 및 세션 초기화 (최초 1회만)
+        # 최초 1회 세션 초기화 로직
         for s_name in target_sheets:
-            if f"val_fwd_{s_name}" not in st.session_state:
+            key_f_init = f"val_fwd_{file_id}_{s_name}"
+            key_b_init = f"val_bwd_{file_id}_{s_name}"
+            
+            if key_f_init not in st.session_state:
                 temp_df = pd.read_excel(uploaded_file, sheet_name=s_name)
                 temp_vg = temp_df['GateV']
                 temp_id = temp_df['DrainI']
                 if abs(temp_vg.max() - temp_vg.iloc[0]) > abs(temp_vg.min() - temp_vg.iloc[0]):
                     p_idx = temp_vg.idxmax()
                 else: p_idx = temp_vg.idxmin()
-                temp_fwd_vg, temp_fwd_id = temp_vg[:p_idx+1], temp_id[:p_idx+1]
-                temp_bwd_vg, temp_bwd_id = temp_vg[p_idx:], temp_id[p_idx:]
+                temp_fwd_vg, temp_fwd_id = temp_vg[:p_idx+1].reset_index(drop=True), temp_id[:p_idx+1].reset_index(drop=True)
+                temp_bwd_vg, temp_bwd_id = temp_vg[p_idx:].reset_index(drop=True), temp_id[p_idx:].reset_index(drop=True)
                 
-                win = min(len(temp_fwd_vg), 15)
-                if win % 2 == 0: win -= 1
-                f_sm = savgol_filter(medfilt(temp_fwd_id, 3), win, 2) if win >= 3 else temp_fwd_id
-                b_sm = savgol_filter(medfilt(temp_bwd_id, 3), win, 2) if win >= 3 else temp_bwd_id
+                gm_f_init = np.abs(fix_inf(np.gradient(temp_fwd_id.values, temp_fwd_vg.values)))
+                gm_b_init = np.abs(fix_inf(np.gradient(temp_bwd_id.values, temp_bwd_vg.values)))
                 
-                st.session_state[f"val_fwd_{s_name}"] = float(temp_fwd_vg.iloc[np.argmax(np.abs(np.gradient(f_sm, temp_fwd_vg)))])
-                st.session_state[f"val_bwd_{s_name}"] = float(temp_bwd_vg.iloc[np.argmax(np.abs(np.gradient(b_sm, temp_bwd_vg)))])
-
+                idx_f_init = np.argmax(gm_f_init[2:-2]) + 2 if len(gm_f_init) > 5 else np.argmax(gm_f_init)
+                idx_b_init = np.argmax(gm_b_init[2:-2]) + 2 if len(gm_b_init) > 5 else np.argmax(gm_b_init)
+                
+                st.session_state[key_f_init] = float(temp_fwd_vg.iloc[idx_f_init])
+                st.session_state[key_b_init] = float(temp_bwd_vg.iloc[idx_b_init])
 
         st.sidebar.markdown("---")
-        # ✅ Average 옵션을 가장 마지막으로 배치
         options = target_sheets + ["Average (All Sheets)"]
         selected_sheet = st.sidebar.selectbox("📂 Select Data Sheet", options)
         
-        # =====================================================================
-        # [모드 1] Average (All Sheets) 선택 시 로직
-        # =====================================================================
         if selected_sheet == "Average (All Sheets)":
             st.markdown(f"<h3 style='color: #333;'>📊 Statistics (Average of {len(target_sheets)} sheets)</h3>", unsafe_allow_html=True)
             st.info("해당 값은 각 시트에서 추출된(수정된 Vg 포인트가 반영된) 파라미터의 평균(± 표준편차)입니다.")
@@ -157,7 +174,7 @@ if uploaded_file:
             for sheet in target_sheets:
                 df = pd.read_excel(uploaded_file, sheet_name=sheet)
                 if 'GateV' in df.columns and 'DrainI' in df.columns:
-                    res = extract_parameters_from_sheet(df, sheet, W, L, Cox)
+                    res = extract_parameters_from_sheet(df, file_id, sheet, W, L, Cox)
                     results.append(res)
                     
             if not results:
@@ -196,9 +213,6 @@ if uploaded_file:
                 o2.markdown(make_card("Hysteresis", format_stat('hysteresis', 'V'), "#5B5F97"), unsafe_allow_html=True)
                 st.markdown("---")
 
-        # =====================================================================
-        # [모드 2] 특정 단일 시트 선택 시 로직 (기존 로직 완벽 유지)
-        # =====================================================================
         else:
             df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
             if 'GateV' not in df.columns or 'DrainI' not in df.columns:
@@ -223,48 +237,108 @@ if uploaded_file:
                 if has_ig:
                     ig_fwd, ig_bwd = ig_raw[:peak_idx+1].reset_index(drop=True), ig_raw[peak_idx:].reset_index(drop=True)
 
-                id_fwd_med = medfilt(id_fwd, kernel_size=3) 
-                id_bwd_med = medfilt(id_bwd, kernel_size=3)
-
-                win_len = min(len(id_fwd), 15)
-                if win_len % 2 == 0: win_len -= 1
-                
-                if win_len >= 3:
-                    id_fwd_smooth = savgol_filter(id_fwd_med, win_len, 2)
-                    id_bwd_smooth = savgol_filter(id_bwd_med, win_len, 2)
-                else:
-                    id_fwd_smooth, id_bwd_smooth = id_fwd_med, id_bwd_med
-
                 gm_fwd_raw = fix_inf(np.gradient(id_fwd.values, vg_fwd.values))
                 mobility_fwd_raw = (abs(gm_fwd_raw) * L) / (W * Cox * abs(vd))
                 
                 gm_bwd_raw = fix_inf(np.gradient(id_bwd.values, vg_bwd.values))
                 mobility_bwd_raw = (abs(gm_bwd_raw) * L) / (W * Cox * abs(vd))
 
-                gm_fwd_smooth = fix_inf(np.gradient(id_fwd_smooth, vg_fwd.values))
-                mobility_fwd_smooth = (abs(gm_fwd_smooth) * L) / (W * Cox * abs(vd))
-                
-                gm_bwd_smooth = fix_inf(np.gradient(id_bwd_smooth, vg_bwd.values))
-                mobility_bwd_smooth = (abs(gm_bwd_smooth) * L) / (W * Cox * abs(vd))
-
                 st.sidebar.markdown("---")
                 st.sidebar.markdown(f"**Gₘ Max Point Adjustment ({selected_sheet})**")
                 vg_step = float(abs(vg_fwd.iloc[1] - vg_fwd.iloc[0])) if len(vg_fwd) > 1 else 0.5
                 
-                # ✅ 수정: on_change 콜백 패턴 대신 st.session_state에 확실히 업데이트 되도록 처리
-                st.sidebar.markdown("Adjust <span style='color: #6FADCF; font-weight: bold;'>Forward</span> $V_g$ Point", unsafe_allow_html=True)
-                new_fwd = st.sidebar.number_input("Adjust Fwd Vg", value=st.session_state[f"val_fwd_{selected_sheet}"], step=vg_step, format="%.2f", label_visibility="collapsed", key=f"fwd_ui_{selected_sheet}")
-                st.session_state[f"val_fwd_{selected_sheet}"] = new_fwd
+                # 마스터 세션 키
+                key_f_current = f"val_fwd_{file_id}_{selected_sheet}"
+                key_b_current = f"val_bwd_{file_id}_{selected_sheet}"
                 
-                st.sidebar.markdown("Adjust <span style='color: #F05650; font-weight: bold;'>Backward</span> $V_g$ Point", unsafe_allow_html=True)
-                new_bwd = st.sidebar.number_input("Adjust Bwd Vg", value=st.session_state[f"val_bwd_{selected_sheet}"], step=vg_step, format="%.2f", label_visibility="collapsed", key=f"bwd_ui_{selected_sheet}")
-                st.session_state[f"val_bwd_{selected_sheet}"] = new_bwd
+                # 위젯 고유 키
+                fwd_slider_key = f"fs_{file_id}_{selected_sheet}"
+                fwd_number_key = f"fn_{file_id}_{selected_sheet}"
+                bwd_slider_key = f"bs_{file_id}_{selected_sheet}"
+                bwd_number_key = f"bn_{file_id}_{selected_sheet}"
 
-                selected_idx_fwd = (vg_fwd - new_fwd).abs().argmin()
-                vg_max_gm_fwd = vg_fwd.iloc[selected_idx_fwd]
+                # ✅ 가장 확실한 연동 방식: 위젯이 그려지기 전에 세션 키를 서로 동기화
+                if fwd_slider_key not in st.session_state:
+                    st.session_state[fwd_slider_key] = st.session_state[key_f_current]
+                if fwd_number_key not in st.session_state:
+                    st.session_state[fwd_number_key] = st.session_state[key_f_current]
+                if bwd_slider_key not in st.session_state:
+                    st.session_state[bwd_slider_key] = st.session_state[key_b_current]
+                if bwd_number_key not in st.session_state:
+                    st.session_state[bwd_number_key] = st.session_state[key_b_current]
+
+                # 콜백 함수: 하나가 바뀌면 다른 위젯 키와 마스터 키를 모두 업데이트
+                def sync_fwd_from_slider():
+                    val = st.session_state[fwd_slider_key]
+                    st.session_state[fwd_number_key] = val
+                    st.session_state[key_f_current] = val
+
+                def sync_fwd_from_number():
+                    val = st.session_state[fwd_number_key]
+                    st.session_state[fwd_slider_key] = val
+                    st.session_state[key_f_current] = val
+
+                def sync_bwd_from_slider():
+                    val = st.session_state[bwd_slider_key]
+                    st.session_state[bwd_number_key] = val
+                    st.session_state[key_b_current] = val
+
+                def sync_bwd_from_number():
+                    val = st.session_state[bwd_number_key]
+                    st.session_state[bwd_slider_key] = val
+                    st.session_state[key_b_current] = val
+
+                # 🌟 Forward UI
+                st.sidebar.markdown("<span style=' font-weight: bold;'>Forward $V_g$ Point</span>", unsafe_allow_html=True)
+                fwd_min, fwd_max = float(vg_fwd.min()), float(vg_fwd.max())
                 
-                selected_idx_bwd = (vg_bwd - new_bwd).abs().argmin()
-                vg_max_gm_bwd = vg_bwd.iloc[selected_idx_bwd]
+                # 주의: value 인자를 제거하고 오직 key로만 제어
+                st.sidebar.slider(
+                    "Fwd Vg Drag", 
+                    min_value=fwd_min, max_value=fwd_max, 
+                    step=vg_step, 
+                    key=fwd_slider_key,
+                    on_change=sync_fwd_from_slider,
+                    label_visibility="collapsed"
+                )
+                
+                st.sidebar.number_input(
+                    "Fwd Vg Button", 
+                    min_value=fwd_min, max_value=fwd_max, 
+                    step=vg_step, format="%.2f", 
+                    key=fwd_number_key,
+                    on_change=sync_fwd_from_number,
+                    label_visibility="collapsed"
+                )
+                
+                # 🌟 Backward UI
+                st.sidebar.markdown("<br><span style=' font-weight: bold;'>Backward $V_g$ Point</span>", unsafe_allow_html=True)
+                bwd_min, bwd_max = float(vg_bwd.min()), float(vg_bwd.max())
+                
+                st.sidebar.slider(
+                    "Bwd Vg Drag", 
+                    min_value=bwd_min, max_value=bwd_max, 
+                    step=vg_step, 
+                    key=bwd_slider_key,
+                    on_change=sync_bwd_from_slider,
+                    label_visibility="collapsed"
+                )
+                
+                st.sidebar.number_input(
+                    "Bwd Vg Button", 
+                    min_value=bwd_min, max_value=bwd_max, 
+                    step=vg_step, format="%.2f", 
+                    key=bwd_number_key,
+                    on_change=sync_bwd_from_number,
+                    label_visibility="collapsed"
+                )
+
+                # 그래프 및 계산에는 마스터 세션 키를 사용
+                vg_max_gm_fwd = float(vg_fwd.loc[(vg_fwd - st.session_state[key_f_current]).abs().idxmin()])
+                vg_max_gm_bwd = float(vg_bwd.loc[(vg_bwd - st.session_state[key_b_current]).abs().idxmin()])
+                
+                selected_idx_fwd = vg_fwd[vg_fwd == vg_max_gm_fwd].index[0]
+                selected_idx_bwd = vg_bwd[vg_bwd == vg_max_gm_bwd].index[0]
 
                 vth_fwd = -id_fwd.iloc[selected_idx_fwd] / gm_fwd_raw[selected_idx_fwd] + vg_max_gm_fwd
                 peak_mu_fwd = mobility_fwd_raw[selected_idx_fwd]
@@ -328,15 +402,14 @@ if uploaded_file:
                         
                 fig.add_trace(go.Scatter(x=vg_fwd, y=abs(gm_fwd_raw), name="Forward", line=dict(color=color_fwd), legend="legend3"), row=2, col=1)
                 fig.add_trace(go.Scatter(x=vg_bwd, y=abs(gm_bwd_raw), name="Backward", line=dict(color=color_bwd), legend="legend3"), row=2, col=1)
-                fig.add_trace(go.Scatter(x=vg_fwd, y=abs(gm_fwd_smooth), name="Fwd (Smoothed)", line=dict(color=color_fwd_smooth, dash=dense_dash, width=2), legend="legend3"), row=2, col=1)
-                fig.add_trace(go.Scatter(x=vg_bwd, y=abs(gm_bwd_smooth), name="Bwd (Smoothed)", line=dict(color=color_bwd_smooth, dash=dense_dash, width=2), legend="legend3"), row=2, col=1)
+                
+                # 시각화 
                 fig.add_vline(x=vg_max_gm_fwd, line_width=1.5, line_dash=dense_dash, line_color=color_fwd_smooth, opacity=0.8, row=2, col=1)
                 fig.add_vline(x=vg_max_gm_bwd, line_width=1.5, line_dash=dense_dash, line_color=color_bwd_smooth, opacity=0.8, row=2, col=1)
                         
                 fig.add_trace(go.Scatter(x=vg_fwd, y=mobility_fwd_raw, name="Forward", line=dict(color=color_fwd), legend="legend4"), row=2, col=2)
                 fig.add_trace(go.Scatter(x=vg_bwd, y=mobility_bwd_raw, name="Backward", line=dict(color=color_bwd), legend="legend4"), row=2, col=2)
-                fig.add_trace(go.Scatter(x=vg_fwd, y=mobility_fwd_smooth, name="Fwd (Smoothed)", line=dict(color=color_fwd_smooth, dash=dense_dash, width=2), legend="legend4"), row=2, col=2)
-                fig.add_trace(go.Scatter(x=vg_bwd, y=mobility_bwd_smooth, name="Bwd (Smoothed)", line=dict(color=color_bwd_smooth, dash=dense_dash, width=2), legend="legend4"), row=2, col=2)
+                
                 fig.add_vline(x=vg_max_gm_fwd, line_width=1.5, line_dash=dense_dash, line_color=color_fwd_smooth, opacity=0.8, row=2, col=2)
                 fig.add_vline(x=vg_max_gm_bwd, line_width=1.5, line_dash=dense_dash, line_color=color_bwd_smooth, opacity=0.8, row=2, col=2)
 
