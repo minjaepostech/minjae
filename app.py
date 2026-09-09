@@ -40,9 +40,40 @@ st.sidebar.header("Device Information")
 operating_mode = st.sidebar.radio("Operating Mode", ["Linear", "Saturation"])
 st.sidebar.markdown("---")
 
-W = st.sidebar.number_input("Width (μm)", value=1000, step=50) 
-L = st.sidebar.number_input("Length (μm)", value=100, step=50)
-Cox_nf = st.sidebar.number_input("Capacitance (nF/cm⁻²)", value=34.5) 
+W = st.sidebar.number_input("Width (μm)", value=1000.0, step=50.0, format="%.2f")
+L = st.sidebar.number_input("Length (μm)", value=100.0, step=10.0, format="%.2f")
+
+# Capacitance 입력 (직접 입력 또는 HfO2 k/두께 계산)
+st.sidebar.markdown("**Capacitance (nF/cm²)**")
+use_hfo2 = st.sidebar.checkbox("Calculate from dielectric constant (k) and thickness")
+
+if use_hfo2:
+    hfo2_k = st.sidebar.number_input("Dielectric constant (k)", value=25.0, step=0.1, format="%.2f")
+    hfo2_t_nm = st.sidebar.number_input("Thickness (nm)", value=30.0, step=1.0, format="%.2f")
+    eps0 = 8.854e-12
+    Cox_nf = (eps0 * hfo2_k / (hfo2_t_nm * 1e-9)) * 1e5
+    st.sidebar.markdown(
+        f'''
+        <div style="
+            font-size:16px;
+            font-weight:bold;
+            color:#333;
+            margin-top:10px;
+            margin-bottom:15px;
+        ">
+            Calculated Capacitance: {Cox_nf:.2f} nF/cm²
+        </div>
+        <hr style="
+            border:0;
+            border-top:1px solid #cccccc;
+            margin:10px 0 15px 0;
+        ">
+        ''',
+        unsafe_allow_html=True
+    )
+else:
+    Cox_nf = st.sidebar.number_input("Capacitance (nF/cm²)", value=34.5, format="%.2f")
+
 Cox = Cox_nf * 1e-9
 
 # 무한대(inf) 값을 0이 아닌 '앞뒤의 정상적인 값'으로 채워 넣는 함수
@@ -150,9 +181,22 @@ def extract_parameters_from_sheet(df, file_id, sheet_name, w, l, cox, mode):
     }
 
 # 3. 파일 업로드
-uploaded_file = st.file_uploader("측정된 엑셀 파일을 업로드하세요", type=["xlsx", "xls"])
+uploaded_files = st.file_uploader(
+    "측정된 엑셀 파일을 업로드하세요",
+    type=["xlsx", "xls"],
+    accept_multiple_files=True
+)
 
-if uploaded_file:
+if uploaded_files:
+    if len(uploaded_files) > 1:
+        selected_file_name = st.sidebar.selectbox(
+            "📁 Select Excel File",
+            [f.name for f in uploaded_files]
+        )
+        uploaded_file = next(f for f in uploaded_files if f.name == selected_file_name)
+    else:
+        uploaded_file = uploaded_files[0]
+
     file_id = f"{uploaded_file.name}_{uploaded_file.size}"
     
     xls = pd.ExcelFile(uploaded_file)
@@ -228,14 +272,14 @@ if uploaded_file:
                 f1, f2, f3, f4 = st.columns(4)
                 f1.markdown(make_card(f"{operating_mode} Mobility (@ Peak)", format_stat('mu_fwd', 'cm²/V·s'), "#2E60AB"), unsafe_allow_html=True)
                 f2.markdown(make_card("Threshold Voltage (Vₜₕ)", format_stat('vth_fwd', 'V'), "#A23B72"), unsafe_allow_html=True)
-                f3.markdown(make_card("Peak Point (Vg)", format_stat('gm_max_fwd', 'V'), "#F18F01"), unsafe_allow_html=True)
+                f3.markdown(make_card("Peak Point (V<sub>g</sub>)", format_stat('gm_max_fwd', 'V'), "#F18F01"), unsafe_allow_html=True)
                 f4.markdown(make_card("SS (Subthreshold Swing)", format_stat('ss_fwd', 'mV/dec'), "#18A558"), unsafe_allow_html=True)
 
                 st.markdown("<h4 style='color: #F05650; margin-top: 20px;'>Backward Sweep Parameters (Avg)</h4>", unsafe_allow_html=True)
                 b1, b2, b3, b4 = st.columns(4)
                 b1.markdown(make_card(f"{operating_mode} Mobility (@ Peak)", format_stat('mu_bwd', 'cm²/V·s'), "#2E60AB"), unsafe_allow_html=True)
                 b2.markdown(make_card("Threshold Voltage (Vₜₕ)", format_stat('vth_bwd', 'V'), "#A23B72"), unsafe_allow_html=True)
-                b3.markdown(make_card("Peak Point (Vg)", format_stat('gm_max_bwd', 'V'), "#F18F01"), unsafe_allow_html=True)
+                b3.markdown(make_card("Peak Point (V<sub>g</sub>)", format_stat('gm_max_bwd', 'V'), "#F18F01"), unsafe_allow_html=True)
                 b4.markdown(make_card("SS (Subthreshold Swing)", format_stat('ss_bwd', 'mV/dec'), "#18A558"), unsafe_allow_html=True)
                 
                 st.markdown("<h4 style='margin-top: 20px;'>Overall Device Parameters (Avg)</h4>", unsafe_allow_html=True)
@@ -375,14 +419,14 @@ if uploaded_file:
                 f1, f2, f3, f4 = st.columns(4)
                 f1.markdown(make_card("Peak Mobility", f"{res['mu_fwd']:.2f} cm²/V·s", "#2E60AB"), unsafe_allow_html=True)
                 f2.markdown(make_card("Threshold Voltage (Vₜₕ)", f"{res['vth_fwd']:.2f} V", "#A23B72"), unsafe_allow_html=True)
-                f3.markdown(make_card("Peak Point (Vg)", f"{vg_max_gm_fwd:.1f} V", "#F18F01"), unsafe_allow_html=True)
+                f3.markdown(make_card("Peak Point (V<sub>g</sub>)", f"{vg_max_gm_fwd:.1f} V", "#F18F01"), unsafe_allow_html=True)
                 f4.markdown(make_card("SS (Subthreshold Swing)", ss_fwd_display, "#18A558"), unsafe_allow_html=True)
 
                 st.markdown("<h4 style='color: #F05650; margin-top: 20px;'>Backward Sweep Parameters</h4>", unsafe_allow_html=True)
                 b1, b2, b3, b4 = st.columns(4)
                 b1.markdown(make_card("Peak Mobility", f"{res['mu_bwd']:.2f} cm²/V·s", "#2E60AB"), unsafe_allow_html=True)
                 b2.markdown(make_card("Threshold Voltage (Vₜₕ)", f"{res['vth_bwd']:.2f} V", "#A23B72"), unsafe_allow_html=True)
-                b3.markdown(make_card("Peak Point (Vg)", f"{vg_max_gm_bwd:.1f} V", "#F18F01"), unsafe_allow_html=True)
+                b3.markdown(make_card("Peak Point (V<sub>g</sub>)", f"{vg_max_gm_bwd:.1f} V", "#F18F01"), unsafe_allow_html=True)
                 b4.markdown(make_card("SS (Subthreshold Swing)", ss_bwd_display, "#18A558"), unsafe_allow_html=True)
                 
                 st.markdown("<h4 style='margin-top: 20px;'>Overall Device Parameters</h4>", unsafe_allow_html=True)
